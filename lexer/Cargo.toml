@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-logos = "0.16.0"
-memchr = "2.7.6"
+logos = "0.16.1"
+memchr = "2.8.0"
 utils = { version = "0.1.0", path = "../utils" }
 
 [dev-dependencies]
