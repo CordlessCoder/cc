@@ -1,3 +1,4 @@
+// LICENSE NOTICE START
 // This file is part of CCcc, A simple x86-64 compiler for a tiny subset of C.
 // Copyright (C) 2026 CordlessCoder
 //
@@ -11,6 +12,7 @@
 //
 // You should have received a copy of the GNU General Public License along with CCcc.
 // If not, see <https://www.gnu.org/licenses/>.
+// LICENSE NOTICE END
 
 use std::{cell::OnceCell, num::NonZero, ops::Range, rc::Rc};
 
