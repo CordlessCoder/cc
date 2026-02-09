@@ -1,0 +1,6 @@
+[workspace]
+members = ["ast", "driver", "diagnostics", "lexer", "parser", "source", "utils"]
+resolver = "3"
+
+[profile.dev]
+debug = "full"

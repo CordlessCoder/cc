@@ -1,0 +1,659 @@
+// This file is part of CCcc, A simple x86-64 compiler for a tiny subset of C.
+// Copyright (C) 2026 CordlessCoder
+//
+// CCcc is free software: you can redistribute it and/or modify it under the terms
+// of the GNU General Public License as published by the Free Software Foundation,
+// either version 3 of the License, or (at your option) any later version.
+//
+// CCcc is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+// without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+// PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with CCcc.
+// If not, see <https://www.gnu.org/licenses/>.
+
+use std::fmt::{self, Display, Write};
+
+use utils::VarInt;
+
+use crate::{Block, Decl, Expr, Function, LiteralExpression, Program, Stmt};
+
+#[derive(Debug, Clone, Copy)]
+enum Section {
+    Middle,
+    Last,
+}
+
+#[derive(Debug, Clone)]
+pub struct TreeCtx {
+    prefix: Vec<Section>,
+    pub empty: &'static str,
+    pub connector: &'static str,
+    pub vertical: &'static str,
+    pub end_connector: &'static str,
+}
+impl TreeCtx {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            prefix: Vec::new(),
+            empty: "   ",
+            connector: "├──",
+            vertical: "│  ",
+            end_connector: "└──",
+        }
+    }
+    fn add_level(&mut self) {
+        self.prefix.push(Section::Middle);
+    }
+    fn make_last(&mut self) {
+        *self.prefix.last_mut().unwrap() = Section::Last;
+    }
+    fn pop_level(&mut self) {
+        self.prefix.pop().unwrap();
+    }
+}
+
+impl Default for TreeCtx {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TreeCtx {
+    fn with_indentation(&self, writer: &mut impl Write, name: impl Display) -> fmt::Result {
+        self.write_identation(writer)?;
+        writeln!(writer, "{name}")
+    }
+    fn write_identation(&self, writer: &mut impl Write) -> fmt::Result {
+        for section in self.prefix.iter().rev().skip(1).rev() {
+            let text = match section {
+                Section::Middle => self.vertical,
+                Section::Last => self.empty,
+            };
+            writer.write_str(text)?;
+        }
+        if let Some(last) = self.prefix.last() {
+            let text = match last {
+                Section::Middle => self.connector,
+                Section::Last => self.end_connector,
+            };
+            writer.write_str(text)?;
+        }
+        Ok(())
+    }
+    fn fmt_single_field_flat(
+        &mut self,
+        writer: &mut impl Write,
+        name: &str,
+        val: &impl TreeDisplay,
+    ) -> fmt::Result {
+        self.with_indentation(writer, name)?;
+        val.fmt_tree(self, writer)?;
+        Ok(())
+    }
+    fn fmt_single_field(
+        &mut self,
+        writer: &mut impl Write,
+        name: &str,
+        val: &impl TreeDisplay,
+    ) -> fmt::Result {
+        self.with_indentation(writer, name)?;
+        self.add_level();
+        self.make_last();
+        val.fmt_tree(self, writer)?;
+        self.pop_level();
+        Ok(())
+    }
+    fn fmt_optional_field(
+        &mut self,
+        writer: &mut impl Write,
+        name: &str,
+        val: Option<&impl TreeDisplay>,
+    ) -> fmt::Result {
+        let Some(val) = val else { return Ok(()) };
+        self.with_indentation(writer, name)?;
+        self.add_level();
+        self.make_last();
+        val.fmt_tree(self, writer)?;
+        self.pop_level();
+        Ok(())
+    }
+}
+
+pub trait TreeDisplay {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result;
+}
+
+impl<T: TreeDisplay> TreeDisplay for Option<&T> {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        let Some(s) = self else { return Ok(()) };
+        s.fmt_tree(ctx, writer)
+    }
+}
+
+impl<T: TreeDisplay> TreeDisplay for &[T] {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        let Some((last, rest)) = self.split_last() else {
+            return Ok(());
+        };
+        ctx.add_level();
+        for val in rest {
+            val.fmt_tree(ctx, writer)?;
+        }
+        ctx.make_last();
+        last.fmt_tree(ctx, writer)?;
+        ctx.pop_level();
+        Ok(())
+    }
+}
+
+impl TreeDisplay for &str {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        ctx.write_identation(writer)?;
+        writeln!(writer, "{self:?}")
+    }
+}
+
+impl TreeDisplay for VarInt {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        match self {
+            Self::Pos(v) => v.fmt_tree(ctx, writer),
+            Self::Neg(v) => v.fmt_tree(ctx, writer),
+        }
+    }
+}
+
+impl TreeDisplay for u64 {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        ctx.write_identation(writer)?;
+        writeln!(writer, "{self}")
+    }
+}
+
+impl TreeDisplay for i64 {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        ctx.write_identation(writer)?;
+        writeln!(writer, "{self}")
+    }
+}
+
+impl TreeDisplay for f64 {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        ctx.write_identation(writer)?;
+        writeln!(writer, "{self}")
+    }
+}
+
+impl TreeDisplay for char {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        ctx.write_identation(writer)?;
+        writeln!(writer, "{self:?}")
+    }
+}
+
+impl TreeDisplay for bool {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        ctx.write_identation(writer)?;
+        writeln!(writer, "{self}")
+    }
+}
+
+impl TreeDisplay for Stmt<'_> {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        use Stmt::*;
+        match self {
+            // Break => ctx.with_indentation(writer, "Break")?,
+            // Continue => ctx.with_indentation(writer, "Continue")?,
+            // Expr(e) => e.fmt_tree(ctx, writer)?,
+            Return(e) => ctx.fmt_single_field(writer, "Return", &e.as_ref())?,
+            // Block(b) => b.fmt_tree(ctx, writer)?,
+            // While { cond, body } => {
+            //     ctx.with_indentation(writer, "While")?;
+            //     ctx.add_level();
+            //     ctx.fmt_single_field(writer, "Cond", cond)?;
+            //     ctx.make_last();
+            //     ctx.fmt_single_field(writer, "Body", body)?;
+            //     ctx.pop_level();
+            // }
+            // If {
+            //     cond,
+            //     then_body,
+            //     else_body,
+            // } => {
+            //     ctx.with_indentation(writer, "If")?;
+            //     ctx.add_level();
+            //     ctx.fmt_single_field(writer, "Cond", cond)?;
+            //     if else_body.is_none() {
+            //         ctx.make_last();
+            //     }
+            //     ctx.fmt_single_field(writer, "Then", then_body)?;
+            //     ctx.make_last();
+            //     if let Some(else_body) = else_body {
+            //         ctx.fmt_single_field(writer, "Else", else_body)?;
+            //     }
+            //     ctx.pop_level();
+            // }
+            // For(f) => {
+            //     let crate::For {
+            //         initializer,
+            //         cond,
+            //         increment,
+            //         body,
+            //     } = &**f;
+            //     ctx.with_indentation(writer, "For")?;
+            //     ctx.add_level();
+            //     ctx.fmt_optional_field(writer, "Initializer", initializer.as_ref())?;
+            //     ctx.fmt_optional_field(writer, "Condition", cond.as_ref())?;
+            //     ctx.fmt_optional_field(writer, "Increment", increment.as_ref())?;
+            //     ctx.make_last();
+            //     body.fmt_tree(ctx, writer)?;
+            //     ctx.pop_level();
+            // }
+        }
+        Ok(())
+    }
+}
+
+// impl TreeDisplay for UnaryExpr<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         self.op.fmt_tree(ctx, writer)?;
+//         ctx.add_level();
+//         ctx.make_last();
+//         self.val.fmt_tree(ctx, writer)?;
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
+
+// impl TreeDisplay for BinaryExpr<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         self.op.fmt_tree(ctx, writer)?;
+//         ctx.add_level();
+//         self.lhs.fmt_tree(ctx, writer)?;
+//         ctx.make_last();
+//         self.rhs.fmt_tree(ctx, writer)?;
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
+
+// impl TreeDisplay for LogicalExpr<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         self.op.fmt_tree(ctx, writer)?;
+//         ctx.add_level();
+//         self.lhs.fmt_tree(ctx, writer)?;
+//         ctx.make_last();
+//         self.rhs.fmt_tree(ctx, writer)?;
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
+
+// impl TreeDisplay for MemberAccess<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         ctx.with_indentation(writer, ".")?;
+//         ctx.add_level();
+//         self.object.fmt_tree(ctx, writer)?;
+//         ctx.make_last();
+//         self.member.fmt_tree(ctx, writer)?;
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
+
+impl TreeDisplay for Expr<'_> {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        use Expr::*;
+        match self {
+            Lit(lit) => lit.fmt_tree(ctx, writer),
+            // Ident(name) => ctx.fmt_single_field(writer, "Ident", name),
+            // Binary(op) => op.fmt_tree(ctx, writer),
+            // Logical(op) => op.fmt_tree(ctx, writer),
+            // Unary(op) => op.fmt_tree(ctx, writer),
+            // Grouped(g) => ctx.fmt_single_field(writer, "Group", &**g),
+            // Assignment(assignment) => assignment.fmt_tree(ctx, writer),
+            // Call(call) => call.fmt_tree(ctx, writer),
+            // Ternary(tern) => tern.fmt_tree(ctx, writer),
+            // Call(c) => c.fmt_tree(ctx, writer),
+            // Assignment(a) => a.fmt_tree(ctx, writer),
+            // MemberAccess(a) => a.fmt_tree(ctx, writer),
+            // NamespaceAccess(n) => n.fmt_tree(ctx, writer),
+            // Array(val) => ctx.fmt_single_field_flat(writer, "Array", &&val[..]),
+            // Intrinsic(i) => i.fmt_tree(ctx, writer),
+        }
+    }
+}
+
+impl TreeDisplay for LiteralExpression<'_> {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        use LiteralExpression::*;
+        ctx.write_identation(writer)?;
+        writeln!(writer, "Literal")?;
+        ctx.add_level();
+        ctx.make_last();
+        match self {
+            Str(text) => ctx.fmt_single_field(writer, "Text", &text.as_ref())?,
+            Int(i) => ctx.fmt_single_field(writer, "Int", i)?,
+            // Float(f) => ctx.fmt_single_field(writer, "Float", f)?,
+            // Char(c) => ctx.fmt_single_field(writer, "Char", c)?,
+            // Bool(b) => ctx.fmt_single_field(writer, "Bool", b)?,
+            // Nil => {
+            //     ctx.write_identation(writer)?;
+            //     writeln!(writer, "Nil")?;
+            // }
+        }
+        ctx.pop_level();
+        Ok(())
+    }
+}
+
+impl TreeDisplay for Block<'_> {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        ctx.fmt_single_field_flat(writer, "Block", &self.0.as_slice())
+    }
+}
+
+// impl TreeDisplay for UnaryOperator {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         use UnaryOperator::*;
+//         let text = match self {
+//             Not => "!",
+//             Neg => "-",
+//             // BitNot => "~",
+//             // PreInc => "++x",
+//             // PreDec => "--x",
+//             // PostInc => "x++",
+//             // PostDec => "x--",
+//             // Deref => "*x",
+//             // Addr => "&x",
+//         };
+//         ctx.with_indentation(writer, text)
+//     }
+// }
+//
+// impl TreeDisplay for BinaryOperator {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         ctx.with_indentation(writer, self)
+//     }
+// }
+//
+// impl TreeDisplay for LogicalOperator {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         ctx.with_indentation(writer, self)
+//     }
+// }
+//
+// impl TreeDisplay for Assignment<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         ctx.with_indentation(writer, "Assignment")?;
+//         ctx.add_level();
+//         ctx.fmt_single_field(writer, "Target", &self.target)?;
+//         ctx.make_last();
+//         ctx.fmt_single_field(writer, "Value", &self.val)?;
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
+//
+// impl TreeDisplay for Call<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         let Self { callee, arguments } = self;
+//         ctx.with_indentation(writer, "Call")?;
+//         ctx.add_level();
+//         ctx.fmt_single_field(writer, "Callee", callee)?;
+//         ctx.make_last();
+//         ctx.fmt_single_field(writer, "Arguments", &&**arguments)?;
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
+
+impl TreeDisplay for Program<'_> {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        ctx.fmt_single_field_flat(writer, "Program", &self.declarations.as_slice())
+    }
+}
+
+impl TreeDisplay for Decl<'_> {
+    fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+        use Decl::*;
+        match self {
+            // Stmt(s) => s.fmt_tree(ctx, writer),
+            // VarDecl { name, init } => {
+            //     ctx.with_indentation(writer, "Variable Declaration")?;
+            //     ctx.add_level();
+            //     if init.is_none() {
+            //         ctx.make_last();
+            //     }
+            //     ctx.fmt_single_field(writer, "Name", name)?;
+            //     if let Some(init) = init {
+            //         ctx.make_last();
+            //         ctx.fmt_single_field(writer, "Init", init)?;
+            //     }
+            //     ctx.pop_level();
+            //     Ok(())
+            // }
+            Fun(Function { name, body }) => {
+                ctx.with_indentation(writer, "Function Declaration")?;
+                ctx.add_level();
+                ctx.fmt_single_field(writer, "Name", name)?;
+                // ctx.fmt_single_field(writer, "Parameters", &parameters.as_slice())?;
+                ctx.make_last();
+                ctx.fmt_single_field(writer, "Body", body)?;
+                ctx.pop_level();
+                Ok(())
+            }
+        }
+    }
+}
+// impl TreeDisplay for Ternary<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         ctx.struct_header(writer, "Ternary")?;
+//         ctx.add_level();
+//         ctx.fmt_single_field(writer, "Cond", &self.cond)?;
+//         ctx.fmt_single_field(writer, "Then", &self.then_val)?;
+//         ctx.make_last();
+//         ctx.fmt_single_field(writer, "Else", &self.else_val)?;
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
+
+// impl TreeDisplay for Call<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         ctx.struct_header(writer, "Call")?;
+//         ctx.add_level();
+//         ctx.fmt_single_field(writer, "Callee", &*self.callee)?;
+//         ctx.make_last();
+//         ctx.fmt_single_field_flat(writer, "Args", &&self.args[..])?;
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
+
+// impl TreeDisplay for Assignment<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         ctx.struct_header(writer, "Assignment")?;
+//         ctx.add_level();
+//         ctx.fmt_single_field(writer, "Target", &self.target)?;
+//         ctx.make_last();
+//         ctx.fmt_single_field(writer, "Value", &self.val)?;
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
+// impl TreeDisplay for Function<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         ctx.pop_level();
+//         ctx.add_level();
+//         let crate::Function { body, params, ret } = self;
+//         ctx.struct_header(writer, "Params")?;
+//         ctx.add_level();
+//         for (ty, name) in params.iter().take(params.len().saturating_sub(1)) {
+//             ctx.fmt_single_field(writer, name, ty)?;
+//         }
+//         ctx.make_last();
+//         if let Some((ty, name)) = params.last() {
+//             ctx.fmt_single_field(writer, name, ty)?;
+//         }
+//         ctx.pop_level();
+//         ctx.fmt_single_field(writer, "Return", ret)?;
+//         ctx.make_last();
+//         ctx.fmt_single_field(writer, "Body", body)?;
+//         Ok(())
+//     }
+// }
+
+// impl TreeDisplay for Type<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         use Type::*;
+//         let name = match self {
+//             Void => "void",
+//             Bool => "bool",
+//             Char => "char",
+//             Int => "int",
+//             UInt => "uint",
+//             Float => "float",
+//             Double => "double",
+//             Str => "str",
+//             Named(_) => "Named",
+//             Pointer { .. } => "Pointer",
+//             Array(_, _) => "Array",
+//             Function(_) => "Function",
+//         };
+//         ctx.write_identation(writer)?;
+//         writeln!(writer, "Type: {name}")?;
+//         ctx.add_level();
+//         match self {
+//             Named(..) | Pointer { .. } | Array(..) | Function(..) => {
+//                 ctx.make_last();
+//             }
+//             _ => (),
+//         };
+//         match self {
+//             Named(name) => {
+//                 ctx.write_identation(writer)?;
+//                 writer.write_str(name)?;
+//             }
+//             Pointer { pointee } => pointee.fmt_tree(ctx, writer)?,
+//             Array(ty, len) => {
+//                 ctx.fmt_single_field(writer, "Length", len)?;
+//                 ctx.fmt_single_field(writer, "Type", &**ty)?;
+//             }
+//             Function(func) => {
+//                 func.fmt_tree(ctx, writer)?;
+//             }
+//             _ => (),
+//         }
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
+
+//
+// impl TreeDisplay for NamespaceAccess<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         ctx.struct_header(writer, "::")?;
+//         ctx.add_level();
+//         self.object.fmt_tree(ctx, writer)?;
+//         ctx.make_last();
+//         self.member.fmt_tree(ctx, writer)?;
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
+
+// impl TreeDisplay for SizeOf<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         match self {
+//             SizeOf::Val(v) => ctx.fmt_single_field(writer, "SizeOf value", v),
+//             SizeOf::Type(ty) => ctx.fmt_single_field(writer, "SizeOf type", ty),
+//         }
+//     }
+// }
+
+// impl TreeDisplay for Intrinsic<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         use Intrinsic::*;
+//         match self {
+//             Addr { of } => ctx.fmt_single_field(writer, "Addrof", of)?,
+//             Index { target, index } => {
+//                 ctx.struct_header(writer, "Indexed")?;
+//                 ctx.add_level();
+//                 ctx.fmt_single_field(writer, "Target", target)?;
+//                 ctx.make_last();
+//                 ctx.fmt_single_field(writer, "Idx", index)?;
+//                 ctx.pop_level();
+//             }
+//             Deref { addr } => ctx.fmt_single_field(writer, "Deref", addr)?,
+//             Alloc { size } => ctx.fmt_single_field(writer, "Alloc", size)?,
+//             Free { ptr } => ctx.fmt_single_field(writer, "Free", ptr)?,
+//             Memcpy { from, to, size } => {
+//                 ctx.struct_header(writer, "Memcpy")?;
+//                 ctx.add_level();
+//                 ctx.fmt_single_field(writer, "From", from)?;
+//                 ctx.fmt_single_field(writer, "To", to)?;
+//                 ctx.make_last();
+//                 ctx.fmt_single_field(writer, "Size", size)?;
+//                 ctx.pop_level();
+//             }
+//             Cast { ty, val } => {
+//                 ctx.struct_header(writer, "Cast")?;
+//                 ctx.add_level();
+//                 ctx.fmt_single_field(writer, "To", ty)?;
+//                 ctx.make_last();
+//                 ctx.fmt_single_field(writer, "Value", val)?;
+//                 ctx.pop_level();
+//             }
+//             SizeOf(s) => s.fmt_tree(ctx, writer)?,
+//         }
+//         Ok(())
+//     }
+// }
+// impl TreeDisplay for Elif<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         ctx.struct_header(writer, "Elif")?;
+//         ctx.add_level();
+//         ctx.fmt_single_field(writer, "Cond", &self.cond)?;
+//         ctx.make_last();
+//         ctx.fmt_single_field(writer, "Body", &self.body)?;
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
+//
+// impl TreeDisplay for StructField<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         ctx.struct_header(writer, "Field")?;
+//         ctx.add_level();
+//         ctx.fmt_single_field(writer, "Name", &self.name)?;
+//         ctx.fmt_single_field(writer, "Public", &self.public)?;
+//         ctx.make_last();
+//         ctx.fmt_single_field(writer, "Type", &self.ty)?;
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
+
+// impl TreeDisplay for TypeDecl<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         use TypeDecl::*;
+//         match self {
+//             Struct { fields } => ctx.fmt_single_field_flat(writer, "Struct", &&fields[..]),
+//             Enum { members } => ctx.fmt_single_field_flat(writer, "Enum", &&members[..]),
+//         }
+//     }
+// }
+
+// impl TreeDisplay for SwitchCase<'_> {
+//     fn fmt_tree(&self, ctx: &mut TreeCtx, writer: &mut impl Write) -> fmt::Result {
+//         ctx.struct_header(writer, "Case")?;
+//         ctx.add_level();
+//         ctx.fmt_single_field_flat(writer, "Cases", &&self.cases[..])?;
+//         ctx.make_last();
+//         ctx.fmt_single_field(writer, "Body", &self.body)?;
+//         ctx.pop_level();
+//         Ok(())
+//     }
+// }
