@@ -16,6 +16,7 @@
 // LICENSE NOTICE END
 
 use ast::tree::{TreeCtx, TreeDisplay};
+use codegen::Codegen;
 use diagnostics::{
     AggregateError, ErrorComponent,
     render::{RenderContext, RenderableError},
@@ -25,7 +26,7 @@ use lexer::{Logos, SToken};
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
-    io::{self, stdout},
+    io::{self, stdout, Write},
     path::PathBuf,
     process::Command,
 };
@@ -129,6 +130,34 @@ impl Driver {
             if self.config.stop_at_stage == Stage::Parse {
                 continue;
             }
+
+            let codegen = Codegen::new();
+            let asm = codegen.codegen_program(&program);
+            dbg!(&asm);
+
+            if self.config.stop_at_stage == Stage::Codegen {
+                continue;
+            }
+
+            let assembled_path = input_path.with_added_extension("S");
+            let executable_path = input_path.with_extension("");
+
+            let mut asm_file = File::create(&assembled_path).unwrap();
+            writeln!(&mut asm_file, "{asm}").unwrap();
+            asm_file.flush().unwrap();
+
+            if self.config.stop_at_stage == Stage::Assemble {
+                continue;
+            }
+
+            Command::new("gcc")
+                .arg(&assembled_path)
+                .arg("-o")
+                .arg(&executable_path)
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap();
 
             // let mut vm = LoxVm::default();
             // dbg!(vm.run(&program).unwrap());

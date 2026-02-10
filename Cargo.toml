@@ -1,5 +1,5 @@
 [workspace]
-members = ["ast", "driver", "diagnostics", "lexer", "parser", "source", "utils"]
+members = ["ast", "driver", "diagnostics", "lexer", "parser", "source", "utils", "asm", "codegen"]
 resolver = "3"
 
 [profile.dev]

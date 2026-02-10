@@ -1,0 +1,9 @@
+[package]
+name = "codegen"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+asm = { version = "0.1.0", path = "../asm" }
+ast = { version = "0.1.0", path = "../ast" }
+utils = { version = "0.1.0", path = "../utils" }
